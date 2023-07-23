@@ -1,51 +1,100 @@
-import requests
-import time
-import pyaudio
-import wave
-import os
+const express = require('express')
+const app = express()
+const port = 3000
 
-def get_url(freq):
-  # This function returns the url for the kiwisdr with the given frequency
-  base_url = "http://73.45.156.230:8073/"
-  return base_url + "?f=" + str(freq) + "am"
 
-def get_stream(url):
-  # This function returns the audio stream from the kiwisdr using pyaudio
-  p = pyaudio.PyAudio()
-  stream = p.open(format=pyaudio.paInt16, channels=1, rate=12000, input=True, frames_per_buffer=1024)
-  return stream
+var http = require ('http');
+var fs = require ('fs');
+var discord = require ('discord.js');
+var icy = require ('icy');
 
-def record_stream(stream):
-  # This function records 15 seconds of audio from the stream using pyaudio and saves it as a wav file
-  p = pyaudio.PyAudio()
-  frames = []
-  for i in range(0, int(12000 / 1024 * 15)):
-    data = stream.read(1024)
-    frames.append(data)
-  stream.stop_stream()
-  stream.close()
-  p.terminate()
-  file_name = "recording_" + time.strftime("%Y%m%d-%H%M%S") + ".wav"
-  wf = wave.open(file_name, "wb")
-  wf.setnchannels(1)
-  wf.setsampwidth(p.get_sample_size(pyaudio.paInt16))
-  wf.setframerate(12000)
-  wf.writeframes(b"".join(frames))
-  wf.close()
-  return file_name
+// Create a webhook using the discord.js module
+var webhook = new discord.WebhookClient ({id: process.env.hookid, token: process.env.hooktoken});
 
-def send_file(file_name):
-  # This function sends the wav file to a discord channel using requests and a discord webhook url
-  webhook_url = os.getenv('HookUrl')
-  files = {"file": open(file_name, "rb")}
-  requests.post(webhook_url, files=files)
+// Create a function that downloads audio from a url
+function downloadAudio (url, fileName, callback) {
+  var file = fs.createWriteStream (fileName);
+  var request = http.get (url, function (response) {
+    response.pipe (file);
+    file.on ('finish', function () {
+      file.close (callback); // close () is async, call callback after close completes.
+    });
+  }).on ('error', function (err) { // Handle errors
+    fs.unlink (fileName); // Delete the file async. (But we don't check the result)
+    if (callback) callback (err.message);
+  });
+};
 
-# Main part of the script
-print("Script started")
-while True:
-  url = get_url(1000)
-  stream = get_stream(url)
-  file_name = record_stream(stream)
-  send_file(file_name)
-  print("Recording done")
-  time.sleep(60) # Wait for one minute before repeating
+// Create a function that returns the url for downloading the wav file from the kiwisdr
+function getTuneUrl (frequency, duration) {
+  var url = 'http://73.45.156.230:8073/?f=' + frequency + 'am';
+  return new Promise ((resolve, reject) => {
+    icy.get (url, function (res) {
+      // Click the play button to start the stream
+      res.on ('data', function (data) {
+        if (data.toString ().includes ('id-play-button')) {
+          res.write ('click');
+        }
+      });
+      // Click the record button to start recording
+      res.on ('end', function () {
+        res.write ('click id-rec1 id-btn-grp-5 w3-pointer fa fa-repeat fa-stack-1x w3-text-pink');
+      });
+      // Wait for the duration and then click the record button again to stop recording
+      setTimeout (() => {
+        res.write ('click id-rec1 id-btn-grp-5 w3-pointer fa fa-repeat fa-stack-1x w3-text-pink');
+        // Resolve the url of the downloaded wav file
+        resolve (url + '/kiwi.dl/kiwi_8th_Dipolee.wav');
+      }, duration * 1000);
+    }).on ('error', function (err) { // Handle errors
+      reject (err.message);
+    });
+  });
+};
+
+// Create a function that records and sends the audio to the discord channel
+async function recordAndSendAudio (frequency, duration) {
+  try {
+    // Get the url for downloading the wav file
+    var downloadUrl = await getTuneUrl (frequency, duration);
+    // Download the audio from the url
+    var fileName = frequency + '.wav';
+    downloadAudio (downloadUrl, fileName, function (err) {
+      if (err) {
+        console.error (err);
+      } else {
+        console.log ('Downloaded ' + fileName);
+        // Send the audio file to the discord channel using the webhook
+        webhook.send ('Here is the recording of ' + frequency + ' AM', {
+          files: [fileName]
+        }).then (() => {
+          console.log ('Sent ' + fileName);
+          // Delete the audio file
+          fs.unlinkSync (fileName);
+        }).catch ((err) => {
+          console.error (err);
+        });
+      }
+    });
+  } catch (err) {
+    console.error (err);
+  }
+};
+
+// Start the script and print a message
+console.log ('The script has started');
+// Set an interval to record and send audio every 1 minute
+setInterval (() => {
+  recordAndSendAudio (1000, 15); // Change the frequency and duration as needed
+}, 60 * 1000); // Change the interval as needed
+
+
+
+
+app.get('/', (req, res) => {
+res.send('Hello World!')
+})
+
+app.listen(port, () => {
+ console.log(`Example app listening at http://localhost:${port}`)
+})
